@@ -443,9 +443,9 @@ CLASS zcl_oapi_main IMPLEMENTATION.
 
     rv_abap = rv_abap &&
       |    mi_client->request->set_method( '{ to_upper( is_operation-method ) }' ).\n| &&
-      |    mi_client->request->set_header_field( name = '~request_uri' value = lv_uri ).\n|.
-*      |    mi_client->request->set_header_field( name = 'Content-Type' value = 'todo' ).\n| &&
-*      |    mi_client->request->set_header_field( name = 'Accept'       value = 'todo' ).\n| &&
+      |    mi_client->request->set_header_field( name = '~request_uri' value = lv_uri ).\n| &&
+      |    mi_client->request->set_header_field( name = 'Content-Type' value = 'application/json' ).\n| &&
+      |    mi_client->request->set_header_field( name = 'Accept'       value = 'application/json' ).\n|.
     LOOP AT is_operation-parameters INTO ls_parameter WHERE in = 'header'.
       rv_abap = rv_abap && |    mi_client->request->set_header_field( name = '{ ls_parameter-name }' value = { ls_parameter-abap_name } ).\n|.
     ENDLOOP.
