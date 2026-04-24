@@ -1,11 +1,16 @@
 CLASS zcl_oapi_generator_v2 DEFINITION PUBLIC.
   PUBLIC SECTION.
+
     TYPES: BEGIN OF ty_input,
-             clas_icf_serv TYPE c LENGTH 30,
-             clas_icf_impl TYPE c LENGTH 30,
-             clas_client   TYPE c LENGTH 30,
-             intf          TYPE c LENGTH 30,
-             openapi_json  TYPE string,
+             clas_icf_serv   TYPE c LENGTH 30,
+             clas_icf_impl   TYPE c LENGTH 30,
+             clas_client     TYPE c LENGTH 30,
+             intf            TYPE c LENGTH 30,
+             openapi_json    TYPE string,
+             no_compression  TYPE abap_bool,
+             skip_deprecated TYPE abap_bool,
+             use_empty_key   TYPE abap_bool,
+             pretty_name     TYPE string,
            END OF ty_input.
 
     TYPES: BEGIN OF ty_result,
@@ -68,6 +73,18 @@ CLASS zcl_oapi_generator_v2 DEFINITION PUBLIC.
       RETURNING
         VALUE(rv_info) TYPE string.
 
+    METHODS split_string
+      IMPORTING
+        iv_size          TYPE i
+        iv_input         TYPE string
+      RETURNING
+        VALUE(rt_output) TYPE string_table.
+
+    METHODS split_description
+      IMPORTING
+        iv_description TYPE string
+      CHANGING
+        cv_info        TYPE string.
 ENDCLASS.
 
 
@@ -83,7 +100,8 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
       rv_info = rv_info && |* Title: { ms_specification-info-title }\n|.
     ENDIF.
     IF ms_specification-info-description IS NOT INITIAL.
-      rv_info = rv_info && |* Description: { ms_specification-info-description }\n|.
+      split_description( EXPORTING  iv_description = ms_specification-info-description
+                         CHANGING   cv_info         = rv_info ).
     ENDIF.
     IF ms_specification-info-version IS NOT INITIAL.
       rv_info = rv_info && |* Version: { ms_specification-info-version }\n|.
@@ -108,8 +126,16 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
 
     ms_input = is_input.
 
+    IF ms_input-pretty_name IS INITIAL.
+      ms_input-pretty_name = '/ui2/cl_json=>pretty_mode-camel_case'.
+    ENDIF.
+
     CREATE OBJECT lo_parser.
     ms_specification = lo_parser->parse( is_input-openapi_json ).
+
+    IF is_input-skip_deprecated = abap_true.
+      DELETE ms_specification-operations WHERE deprecated = abap_true.
+    ENDIF.
 
     CREATE OBJECT lo_references.
     ms_specification = lo_references->normalize( ms_specification ).
@@ -127,12 +153,20 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
     DATA lv_typename   TYPE string.
     DATA lv_post       TYPE string.
     DATA lv_pre        TYPE string.
+    DATA lv_indentation TYPE string.
     DATA ls_response   LIKE LINE OF ls_operation-responses.
     DATA ls_content    LIKE LINE OF ls_response-content.
     DATA ls_parameter  LIKE LINE OF ls_operation-parameters.
     DATA lo_response_name TYPE REF TO zcl_oapi_response_name.
     DATA lv_response_name TYPE string.
-    DATA lv_code TYPE string.
+    DATA lv_code          TYPE string.
+    DATA lv_counter       TYPE i.
+    DATA lv_path_match    TYPE string.
+    DATA lt_template_segments TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+    DATA lv_path_placeholder  TYPE string.
+    DATA lv_segment_index     TYPE i.
+    DATA lv_path_parameter_setup TYPE string.
+    DATA lv_path_segment_var  TYPE string.
 
     CREATE OBJECT lo_response_name.
 
@@ -148,51 +182,94 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
 
     rv_abap = rv_abap &&
       |  METHOD if_http_extension~handle_request.\n| &&
-      |    DATA li_handler TYPE REF TO { ms_input-intf }.\n| &&
-      |    DATA lv_method  TYPE string.\n| &&
-      |    DATA lv_path    TYPE string.\n\n| &&
+      |    DATA li_handler      TYPE REF TO { ms_input-intf }.\n| &&
+      |    DATA lv_method       TYPE string.\n| &&
+      |    DATA lv_path         TYPE string.\n| &&
       |    CREATE OBJECT li_handler TYPE { ms_input-clas_icf_impl }.\n| &&
       |    lv_path = server->request->get_header_field( '~path' ).\n| &&
+      |    REPLACE FIRST OCCURRENCE OF { ms_input-intf }=>base_path IN lv_path WITH ''.\n| &&
       |    lv_method = server->request->get_method( ).\n\n|.
     LOOP AT ms_specification-operations INTO ls_operation.
-* todo, handing path parameters, do wildcard with CP?
+      lv_counter = lv_counter + 1.
+
+      lv_path_match = ls_operation-path.
+      REPLACE ALL OCCURRENCES OF REGEX '\{[^}]+\}' IN lv_path_match WITH '*'.
+
       rv_abap = rv_abap &&
         |    TRY.\n| &&
-        |        IF lv_path = '{ ls_operation-path }' AND lv_method = '{ to_upper( ls_operation-method ) }'.\n|.
+        COND string(
+          WHEN lv_path_match = ls_operation-path
+            THEN |        IF lv_path = '{ ls_operation-path }' AND lv_method = '{ to_upper( ls_operation-method ) }'.\n|
+            ELSE |        IF lv_path CP '{ lv_path_match }' AND lv_method = '{ to_upper( ls_operation-method ) }'.\n| ).
 
       CLEAR lv_parameters.
-      IF lines( ls_operation-parameters ) = 1 AND ls_operation-body_schema_ref IS INITIAL.
-        READ TABLE ls_operation-parameters INDEX 1 INTO ls_parameter ##SUBRC_OK.
-* todo, it might be a header parameter
-        IF ls_parameter-in = 'path'.
-          lv_parameters = | server->request->get_form_field( 'todo' )|.
-        ELSE.
-          lv_parameters = | server->request->get_form_field( '{ ls_parameter-name }' )|.
-        ENDIF.
-      ELSE.
-        LOOP AT ls_operation-parameters INTO ls_parameter.
-          CASE ls_parameter-in.
-            WHEN 'query'.
+      CLEAR lv_path_parameter_setup.
+      CLEAR lt_template_segments.
+      SPLIT ls_operation-path AT '/' INTO TABLE lt_template_segments.
+      DELETE lt_template_segments WHERE table_line IS INITIAL.
+
+      LOOP AT ls_operation-parameters INTO ls_parameter.
+        CASE ls_parameter-in.
+          WHEN 'query'.
+            lv_parameters = lv_parameters &&
+              |\n            { ls_parameter-abap_name } = server->request->get_form_field( '{ ls_parameter-name }' )|.
+          WHEN 'header'.
+            lv_parameters = lv_parameters &&
+              |\n            { ls_parameter-abap_name } = server->request->get_header_field( '{ ls_parameter-name }' )|.
+          WHEN 'path'.
+            IF lv_path_parameter_setup IS INITIAL.
+              IF ms_input-use_empty_key = abap_true.
+                lv_path_parameter_setup = lv_path_parameter_setup &&
+                  |          DATA lt_path_segments_{ lv_counter } TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n|.
+              ELSE.
+                lv_path_parameter_setup = lv_path_parameter_setup &&
+                  |          DATA lt_path_segments_{ lv_counter } TYPE STANDARD TABLE OF string WITH DEFAULT KEY.\n|.
+              ENDIF.
+              lv_path_parameter_setup = lv_path_parameter_setup &&
+                |          SPLIT lv_path AT '/' INTO TABLE lt_path_segments_{ lv_counter }.\n| &&
+                |          DELETE lt_path_segments_{ lv_counter } WHERE table_line IS INITIAL.\n|.
+            ENDIF.
+
+            lv_path_placeholder = '{' && ls_parameter-name && '}'.
+            CLEAR lv_segment_index.
+            READ TABLE lt_template_segments WITH KEY table_line = lv_path_placeholder TRANSPORTING NO FIELDS.
+            IF sy-subrc = 0.
+              lv_segment_index = sy-tabix.
+            ENDIF.
+
+            IF lv_segment_index > 0.
+              lv_path_segment_var = |lv_path_segment_{ lv_counter }_{ lv_segment_index }|.
+              lv_path_parameter_setup = lv_path_parameter_setup &&
+                |          DATA { lv_path_segment_var } TYPE string.\n| &&
+                |          READ TABLE lt_path_segments_{ lv_counter } INDEX { lv_segment_index } INTO { lv_path_segment_var }.\n| &&
+                |          ASSERT sy-subrc = 0.\n|.
               lv_parameters = lv_parameters &&
-                |\n            { ls_parameter-abap_name } = server->request->get_form_field( '{ ls_parameter-name }' )|.
-            WHEN OTHERS.
+                |\n            { ls_parameter-abap_name } = { lv_path_segment_var }|.
+            ELSE.
               lv_parameters = lv_parameters &&
-                |\n            { ls_parameter-abap_name } = '{ ls_parameter-in }-todo'|.
-          ENDCASE.
-        ENDLOOP.
+                |\n            { ls_parameter-abap_name } = ''|.
+            ENDIF.
+          WHEN OTHERS.
+            lv_parameters = lv_parameters &&
+              |\n            { ls_parameter-abap_name } = '{ ls_parameter-in }-todo'|.
+        ENDCASE.
+      ENDLOOP.
 
 
-        IF ls_operation-body_schema_ref IS NOT INITIAL.
-          rv_abap = rv_abap &&
-            |          DATA { ls_operation-abap_name  } TYPE { ms_input-intf }=>{ find_schema( ls_operation-body_schema_ref )-abap_name }.\n| &&
-            |          /ui2/cl_json=>deserialize(\n| &&
-            |            EXPORTING\n| &&
-            |              json = server->request->get_cdata( )\n| &&
-            |            CHANGING\n| &&
-            |              data = { ls_operation-abap_name } ).\n|.
-          lv_parameters = lv_parameters &&
-            |\n            body = { ls_operation-abap_name }|.
-        ENDIF.
+      IF ls_operation-request_body-schema_ref IS NOT INITIAL.
+        rv_abap = rv_abap &&
+          |          DATA { ls_operation-abap_name  } TYPE { ms_input-intf }=>{ find_schema( ls_operation-request_body-schema_ref )-abap_name }.\n| &&
+          |          /ui2/cl_json=>deserialize(\n| &&
+          |            EXPORTING\n| &&
+          |              json        = server->request->get_cdata( )\n| &&
+          |              pretty_name = { ms_input-pretty_name }\n| &&
+          |            CHANGING\n| &&
+          |              data        = { ls_operation-abap_name } ).\n|.
+        lv_parameters = lv_parameters &&
+          |\n            body = { ls_operation-abap_name }|.
+      ELSEIF ls_operation-request_body-schema IS NOT INITIAL.
+        lv_parameters = lv_parameters &&
+          |\n            body = 'todo'|.
       ENDIF.
 
       lv_typename = 'r_' && ls_operation-abap_name.
@@ -209,19 +286,35 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
         ELSE.
           lv_code = ls_response-code.
         ENDIF.
-        LOOP AT ls_response-content INTO ls_content.
-
-          lv_response_name = lo_response_name->generate_response_name( iv_content_type = ls_content-type
-                                                                       iv_code         = ls_response-code ).
-
+        IF lines( ls_response-content ) = 0.
           lv_post = lv_post &&
-            |          IF { lv_typename }-{ lv_response_name } IS NOT INITIAL.\n| &&
-            |            server->response->set_content_type( '{ ls_content-type }' ).\n| &&
-            |            server->response->set_cdata( /ui2/cl_json=>serialize( { lv_typename }-{ lv_response_name } ) ).\n| &&
-            |            server->response->set_status( code = { lv_code } reason = '{ ls_response-description }' ).\n| &&
-            |            RETURN.\n| &&
-            |          ENDIF.\n|.
-        ENDLOOP.
+            |          server->response->set_status( code = { lv_code } reason = '{ ls_response-description }' ).\n| &&
+            |          RETURN.\n|.
+        ELSE.
+          LOOP AT ls_response-content INTO ls_content.
+
+            lv_response_name = lo_response_name->generate_response_name( iv_content_type = ls_content-type
+                                                                         iv_code         = ls_response-code ).
+
+            lv_indentation = ||.
+            IF lines( ls_response-content ) > 1.
+              lv_post = lv_post &&
+                |          IF { lv_typename }-{ lv_response_name } IS NOT INITIAL.\n|.
+              lv_indentation = |  |.
+            ENDIF.
+            lv_post = lv_post &&
+              |{ lv_indentation }          server->response->set_content_type( '{ ls_content-type }' ).\n| &&
+              |{ lv_indentation }          server->response->set_cdata( /ui2/cl_json=>serialize(\n| &&
+              |{ lv_indentation }            data        = { lv_typename }-{ lv_response_name }\n| &&
+              |{ lv_indentation }            pretty_name = { ms_input-pretty_name } ) ).\n| &&
+              |{ lv_indentation }          server->response->set_status( code = { lv_code } reason = '{ ls_response-description }' ).\n| &&
+              |{ lv_indentation }          RETURN.\n|.
+            IF lines( ls_response-content ) > 1.
+              lv_post = lv_post &&
+                |          ENDIF.\n|.
+            ENDIF.
+          ENDLOOP.
+        ENDIF.
       ENDLOOP.
       IF lv_post IS NOT INITIAL.
         lv_pre =
@@ -233,20 +326,21 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
       ENDIF.
 
       rv_abap = rv_abap &&
+        lv_path_parameter_setup &&
         lv_pre &&
         |li_handler->{ ls_operation-abap_name }({ lv_parameters } ).\n| &&
         lv_post &&
         |        ENDIF.\n| &&
-        |      CATCH cx_static_check.\n| &&
+        |      CATCH cx_static_check INTO DATA(lx_error{ lv_counter }).\n| &&
         |        server->response->set_content_type( 'text/plain' ).\n| &&
-        |        server->response->set_cdata( 'exception' ).\n| &&
+        |        server->response->set_cdata( lx_error{ lv_counter }->get_text( ) ).\n| &&
         |        server->response->set_status( code = 500 reason = 'Error' ).\n| &&
         |    ENDTRY.\n|.
     ENDLOOP.
     rv_abap = rv_abap &&
       |\n| &&
       |    server->response->set_content_type( 'text/plain' ).\n| &&
-      |    server->response->set_cdata( 'no handler found' ).\n| &&
+      |    server->response->set_cdata( \|No handler found for \{ lv_path \} \{ lv_method \}\| ).\n| &&
       |    server->response->set_status( code = 500 reason = 'Error' ).\n| &&
       |  ENDMETHOD.\n| &&
       |ENDCLASS.|.
@@ -274,12 +368,14 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
 
 
   METHOD build_clas_client.
-    DATA ls_operation LIKE LINE OF ms_specification-operations.
-    DATA ls_parameter LIKE LINE OF ls_operation-parameters.
-    DATA ls_response  LIKE LINE OF ls_operation-responses.
-    DATA ls_content   LIKE LINE OF ls_response-content.
+    DATA ls_operation     LIKE LINE OF ms_specification-operations.
+    DATA ls_parameter     LIKE LINE OF ls_operation-parameters.
+    DATA ls_response      LIKE LINE OF ls_operation-responses.
+    DATA ls_content       LIKE LINE OF ls_response-content.
     DATA lo_response_name TYPE REF TO zcl_oapi_response_name.
-    DATA lv_name TYPE string.
+    DATA ls_cresponse     LIKE LINE OF ms_specification-components-responses.
+    DATA lv_name          TYPE string.
+    DATA lv_has_others       TYPE abap_bool.
 
     CREATE OBJECT lo_response_name.
 
@@ -287,24 +383,28 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
       generation_information( ) &&
       |  PUBLIC SECTION.\n| &&
       |    INTERFACES { ms_input-intf }.\n| &&
+      |    "! Supply http client and possibily extra http headers to instantiate the openAPI client\n| &&
+      |    "! Use cl_http_client=>create_by_destination() or cl_http_client=>create_by_url() to create the client\n| &&
+      |    "! the caller must close() the client\n| &&
       |    METHODS constructor\n| &&
       |      IMPORTING\n| &&
       |        ii_client        TYPE REF TO if_http_client\n| &&
       |        iv_uri_prefix    TYPE string OPTIONAL\n| &&
       |        it_extra_headers TYPE tihttpnvp OPTIONAL\n| &&
+      |        iv_logon_popup   TYPE i DEFAULT if_http_client=>co_disabled\n| &&
       |        iv_timeout       TYPE i DEFAULT if_http_client=>co_timeout_default.\n| &&
       |  PROTECTED SECTION.\n| &&
       |    DATA mi_client        TYPE REF TO if_http_client.\n| &&
       |    DATA mv_timeout       TYPE i.\n| &&
+      |    DATA mv_logon_popup   TYPE i.\n| &&
       |    DATA mv_uri_prefix    TYPE string.\n| &&
       |    DATA mt_extra_headers TYPE tihttpnvp.\n| &&
       |ENDCLASS.\n\n| &&
       |CLASS { ms_input-clas_client } IMPLEMENTATION.\n| &&
       |  METHOD constructor.\n| &&
-      |    " Use cl_http_client=>create_by_destination() or cl_http_client=>create_by_url() to create the client\n| &&
-      |    " the caller must close() the client\n| &&
       |    mi_client = ii_client.\n| &&
       |    mv_timeout = iv_timeout.\n| &&
+      |    mv_logon_popup = iv_logon_popup.\n| &&
       |    mv_uri_prefix = iv_uri_prefix.\n| &&
       |    mt_extra_headers = it_extra_headers.\n| &&
       |  ENDMETHOD.\n\n|.
@@ -312,16 +412,20 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
     LOOP AT ms_specification-operations INTO ls_operation.
       rv_abap = rv_abap &&
         |  METHOD { ms_input-intf }~{ ls_operation-abap_name }.\n| &&
-        |    DATA lv_code         TYPE i.\n| &&
-        |    DATA lv_message      TYPE string.\n| &&
         |    DATA lv_uri          TYPE string.\n| &&
         |    DATA ls_header       LIKE LINE OF mt_extra_headers.\n| &&
         |    DATA lv_dummy        TYPE string.\n| &&
         |    DATA lv_content_type TYPE string.\n| &&
         |\n| &&
-        |    mi_client->propertytype_logon_popup = if_http_client=>co_disabled.\n| &&
+        |    mi_client->propertytype_logon_popup = mv_logon_popup.\n| &&
         |    mi_client->request->set_method( '{ to_upper( ls_operation-method ) }' ).\n| &&
-        |    lv_uri = mv_uri_prefix && '{ ls_operation-path }'.\n|.
+        |    mi_client->request->set_version( if_http_request=>co_protocol_version_1_1 ).\n|.
+      IF ms_input-no_compression = abap_false.
+        rv_abap = rv_abap &&
+          |    mi_client->request->set_compression( ).\n|.
+      ENDIF.
+      rv_abap = rv_abap &&
+          |    lv_uri = mv_uri_prefix && '{ ls_operation-path }'.\n|.
 
       LOOP AT ls_operation-parameters INTO ls_parameter.
         CASE ls_parameter-in.
@@ -349,10 +453,25 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
         |        value = ls_header-value ).\n| &&
         |    ENDLOOP.\n|.
 
-      IF to_upper( ls_operation-method ) = 'POST'.
+      IF ls_operation-request_body-type IS NOT INITIAL.
+        rv_abap = rv_abap && |    mi_client->request->set_content_type( '{ ls_operation-request_body-type }' ).\n|.
+      ENDIF.
+
+      IF ls_operation-request_body-schema IS NOT INITIAL.
+        CASE ls_operation-request_body-schema->get_simple_type( ).
+          WHEN 'xstring'.
+            rv_abap = rv_abap && |    mi_client->request->set_data( body ).\n|.
+          WHEN 'string'.
+            rv_abap = rv_abap && |    mi_client->request->set_cdata( body ).\n|.
+        ENDCASE.
+      ELSEIF ls_operation-request_body-schema_ref IS NOT INITIAL
+          AND ls_operation-request_body-type = 'application/json'.
+* this does make some assumptions on the names in the openapi, it should work for every case, eventually,
         rv_abap = rv_abap &&
-*          |    mi_client->request->set_content_type( 'application/json' ).\n| &&
-          |    mi_client->request->set_data( '112233AABBCCDDEEFF' ).\n|.
+          |    mi_client->request->set_cdata( /ui2/cl_json=>serialize(\n| &&
+          |      data          = body\n| &&
+          |      ts_as_iso8601 = abap_true\n| &&
+          |      pretty_name   = { ms_input-pretty_name } ) ).\n|.
       ENDIF.
 
       rv_abap = rv_abap &&
@@ -366,18 +485,37 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
         |    IF sy-subrc <> 0.\n| &&
         |      mi_client->get_last_error(\n| &&
         |        IMPORTING\n| &&
-        |          code    = lv_code\n| &&
-        |          message = lv_message ).\n| &&
+        |          code    = return-code\n| &&
+        |          message = return-reason ).\n| &&
         |      ASSERT 1 = 2.\n| &&
         |    ENDIF.\n| &&
         |\n| &&
         |    lv_content_type = mi_client->response->get_content_type( ).\n| &&
-        |    mi_client->response->get_status( IMPORTING code = lv_code ).\n| &&
-        |    CASE lv_code.\n|.
+        |    mi_client->response->get_status(\n| &&
+        |      IMPORTING\n| &&
+        |        code   = return-code\n| &&
+        |        reason = return-reason ).\n| &&
+        |    CASE return-code.\n|.
 
+      lv_has_others = abap_false.
       LOOP AT ls_operation-responses INTO ls_response.
-        rv_abap = rv_abap &&
-          |      WHEN '{ ls_response-code }'.\n|.
+        IF ls_response-code = 'default'.
+          rv_abap = rv_abap && |      WHEN OTHERS.\n|.
+          lv_has_others = abap_true.
+        ELSEIF ls_response-description IS NOT INITIAL.
+          rv_abap = rv_abap && |      WHEN { ls_response-code }. " { ls_response-description }\n|.
+        ELSE.
+          rv_abap = rv_abap && |      WHEN { ls_response-code }.\n|.
+        ENDIF.
+
+        IF ls_response-ref IS NOT INITIAL.
+          lv_name = ls_response-ref.
+          REPLACE FIRST OCCURRENCE OF '#/components/responses/' IN lv_name WITH ''.
+          READ TABLE ms_specification-components-responses WITH KEY name = lv_name INTO ls_cresponse.
+          IF sy-subrc = 0.
+            APPEND LINES OF ls_cresponse-content TO ls_response-content.
+          ENDIF.
+        ENDIF.
 
         IF lines( ls_response-content ) > 0.
           rv_abap = rv_abap &&
@@ -394,8 +532,11 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
 
               rv_abap = rv_abap &&
                 |            /ui2/cl_json=>deserialize(\n| &&
-                |              EXPORTING json = mi_client->response->get_cdata( )\n| &&
-                |              CHANGING data = return-{ lv_name } ).\n|.
+                |              EXPORTING\n| &&
+                |                json        = mi_client->response->get_cdata( )\n| &&
+                |                pretty_name = { ms_input-pretty_name }\n| &&
+                |              CHANGING\n| &&
+                |                data        = return-{ lv_name } ).\n|.
             ELSE.
               rv_abap = rv_abap &&
                 |* todo, content type = '{ ls_content-type }'\n|.
@@ -405,15 +546,21 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
             |          WHEN OTHERS.\n| &&
             |* unexpected content type\n| &&
             |        ENDCASE.\n|.
+        ELSEIF ls_response-ref IS NOT INITIAL.
+          rv_abap = rv_abap &&
+            |* todo, no content types { ls_response-ref }\n|.
         ELSE.
           rv_abap = rv_abap &&
             |* todo, no content types\n|.
         ENDIF.
       ENDLOOP.
 
+      IF lv_has_others = abap_false.
+        rv_abap = rv_abap &&
+          |      WHEN OTHERS.\n| &&
+          |* todo, error handling\n|.
+      ENDIF.
       rv_abap = rv_abap &&
-        |      WHEN OTHERS.\n| &&
-        |* todo, error handling\n| &&
         |    ENDCASE.\n\n| &&
         |  ENDMETHOD.\n\n|.
     ENDLOOP.
@@ -426,16 +573,28 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
     DATA ls_operation LIKE LINE OF ms_specification-operations.
     DATA ls_returning TYPE ty_returning.
     DATA ls_component_schema LIKE LINE OF ms_specification-components-schemas.
+    DATA ls_server LIKE LINE OF ms_specification-servers.
 
     rv_abap = |INTERFACE { ms_input-intf } PUBLIC.\n| &&
       generation_information( ) &&
       |\n|.
 
+    IF ms_specification-servers IS NOT INITIAL.
+      READ TABLE ms_specification-servers INDEX 1 INTO ls_server.
+      IF sy-subrc = 0.
+        rv_abap = rv_abap && |  CONSTANTS base_path TYPE string VALUE '{ ls_server-url }'.\n\n|.
+      ENDIF.
+    ELSE.
+      rv_abap = rv_abap && |  CONSTANTS base_path TYPE string VALUE ''.\n\n|.
+    ENDIF.
+
+
     LOOP AT ms_specification-components-schemas INTO ls_component_schema.
       rv_abap = rv_abap && |* { ls_component_schema-name }\n|.
       rv_abap = rv_abap && ls_component_schema-schema->build_type_definition2(
         iv_name          = ls_component_schema-abap_name
-        is_specification = ms_specification ).
+        is_specification = ms_specification
+        iv_use_empty_key = ms_input-use_empty_key ).
     ENDLOOP.
     IF sy-subrc = 0.
       rv_abap = rv_abap && |\n|.
@@ -443,8 +602,11 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
 
     LOOP AT ms_specification-operations INTO ls_operation.
       ls_returning = find_returning_parameter( ls_operation ).
-      rv_abap = rv_abap && ls_returning-type &&
-        |  METHODS { ls_operation-abap_name }{
+      rv_abap = rv_abap && ls_returning-type.
+      IF ls_operation-summary IS NOT INITIAL.
+        rv_abap = rv_abap && |  "! { ls_operation-summary }\n|.
+      ENDIF.
+      rv_abap = rv_abap && |  METHODS { ls_operation-abap_name }{
           find_input_parameters( ls_operation ) }{
           ls_returning-abap }\n    RAISING\n      cx_static_check.\n|.
     ENDLOOP.
@@ -453,12 +615,26 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
 
 
   METHOD find_input_parameters.
-    DATA lt_list TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
-    DATA lv_str TYPE string.
-    DATA ls_parameter LIKE LINE OF is_operation-parameters.
-    DATA lv_simple_type TYPE string.
+    DATA lt_list          TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+    DATA lv_str           TYPE string.
+    DATA ls_parameter     LIKE LINE OF is_operation-parameters.
+    DATA lv_simple_type   TYPE string.
+    DATA ls_parameter_ref LIKE LINE OF is_operation-parameters_ref.
+    DATA lv_name          TYPE string.
+    DATA ls_cparameter    LIKE LINE OF ms_specification-components-parameters.
+    DATA lt_parameters    LIKE is_operation-parameters.
 
-    LOOP AT is_operation-parameters INTO ls_parameter.
+    lt_parameters = is_operation-parameters.
+    LOOP AT is_operation-parameters_ref INTO ls_parameter_ref.
+      lv_name = ls_parameter_ref.
+      REPLACE FIRST OCCURRENCE OF '#/components/parameters/' IN lv_name WITH ''.
+      READ TABLE ms_specification-components-parameters WITH KEY name = lv_name INTO ls_cparameter.
+      IF sy-subrc = 0.
+        APPEND ls_cparameter TO lt_parameters.
+      ENDIF.
+    ENDLOOP.
+
+    LOOP AT lt_parameters INTO ls_parameter.
       IF ls_parameter-schema->type = 'array'.
         lv_simple_type = 'string_table'.
       ELSE.
@@ -472,8 +648,11 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
       APPEND lv_str TO lt_list.
     ENDLOOP.
 
-    IF is_operation-body_schema_ref IS NOT INITIAL.
-      lv_str = |      body TYPE { find_schema( is_operation-body_schema_ref )-abap_name }|.
+    IF is_operation-request_body-schema_ref IS NOT INITIAL.
+      lv_str = |      body TYPE { find_schema( is_operation-request_body-schema_ref )-abap_name }|.
+      APPEND lv_str TO lt_list.
+    ELSEIF is_operation-request_body-schema IS NOT INITIAL.
+      lv_str = |      body TYPE { is_operation-request_body-schema->get_simple_type( ) }|.
       APPEND lv_str TO lt_list.
     ENDIF.
 
@@ -486,21 +665,35 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
 
 
   METHOD find_returning_parameter.
-    DATA ls_response LIKE LINE OF is_operation-responses.
-    DATA ls_content LIKE LINE OF ls_response-content.
-    DATA lv_typename TYPE char30.
-    DATA lo_response_name TYPE REF TO zcl_oapi_response_name.
-    DATA lv_response_name TYPE string.
+    DATA ls_response       LIKE LINE OF is_operation-responses.
+    DATA ls_content        LIKE LINE OF ls_response-content.
+    DATA lv_typename       TYPE char30.
+    DATA lo_response_name  TYPE REF TO zcl_oapi_response_name.
+    DATA lv_response_name  TYPE string.
     DATA lv_returning_type TYPE string.
+    DATA lv_name           TYPE string.
+    DATA ls_cresponse      LIKE LINE OF ms_specification-components-responses.
+
+    FIELD-SYMBOLS <ls_response> LIKE LINE OF is_operation-responses.
 
     CREATE OBJECT lo_response_name.
 
     lv_typename = 'r_' && is_operation-abap_name.
 
-    LOOP AT is_operation-responses INTO ls_response.
-      LOOP AT ls_response-content INTO ls_content.
-        lv_response_name = lo_response_name->generate_response_name( iv_content_type = ls_content-type
-                                                                     iv_code         = ls_response-code ).
+    LOOP AT is_operation-responses ASSIGNING <ls_response>.
+      IF <ls_response>-ref IS NOT INITIAL.
+        lv_name = <ls_response>-ref.
+        REPLACE FIRST OCCURRENCE OF '#/components/responses/' IN lv_name WITH ''.
+        READ TABLE ms_specification-components-responses WITH KEY name = lv_name INTO ls_cresponse.
+        IF sy-subrc = 0.
+          APPEND LINES OF ls_cresponse-content TO <ls_response>-content.
+        ENDIF.
+      ENDIF.
+
+      LOOP AT <ls_response>-content INTO ls_content.
+        lv_response_name = lo_response_name->generate_response_name(
+          iv_content_type = ls_content-type
+          iv_code         = <ls_response>-code ).
         IF ls_content-schema_ref = space.
           lv_returning_type = ls_content-schema->type.
         ELSE.
@@ -510,19 +703,80 @@ CLASS zcl_oapi_generator_v2 IMPLEMENTATION.
               |           { lv_response_name } TYPE { lv_returning_type },\n|.
       ENDLOOP.
     ENDLOOP.
-    IF rs_returning-type IS NOT INITIAL.
-      rs_returning-type =
-        |  TYPES: BEGIN OF { lv_typename },\n| &&
-        |{ rs_returning-type }| &&
-        |         END OF { lv_typename }.\n|.
-    ENDIF.
+    rs_returning-type =
+      |  TYPES: BEGIN OF { lv_typename },\n| &&
+      |           code          TYPE i,\n| &&
+      |           reason        TYPE string,\n| &&
+      |{ rs_returning-type }| &&
+      |         END OF { lv_typename }.\n|.
 
-    LOOP AT is_operation-responses INTO ls_response.
-      LOOP AT ls_response-content INTO ls_content.
-        rs_returning-abap = rs_returning-abap &&
-          |\n    RETURNING\n      VALUE(return) TYPE { lv_typename }|.
-        RETURN. " exit method, as only one return parameter is allowed
+    rs_returning-abap = rs_returning-abap &&
+      |\n    RETURNING\n      VALUE(return) TYPE { lv_typename }|.
+
+  ENDMETHOD.
+
+  METHOD split_description.
+*----------------------------------------------------------------------*
+* LOCAL DATA DEFINITION
+*----------------------------------------------------------------------*
+    DATA: lt_descr1     TYPE STANDARD TABLE OF string WITH DEFAULT KEY,
+          lt_descr2     TYPE STANDARD TABLE OF string WITH DEFAULT KEY,
+          lv_first_time TYPE abap_bool.
+
+    FIELD-SYMBOLS: <ls_desc1> TYPE string,
+                   <ls_desc2> TYPE string.
+
+* ---------- Set description title ----------------------------------------------------------------
+    cv_info = cv_info && |* Description:|.
+
+* ---------- Split desription at new line ---------------------------------------------------------
+    SPLIT iv_description AT cl_abap_char_utilities=>newline INTO TABLE lt_descr1.
+
+    LOOP AT lt_descr1 ASSIGNING <ls_desc1>.
+* ---------- Init loop data -----------------------------------------------------------------------
+      CLEAR: lt_descr2.
+      UNASSIGN: <ls_desc2>.
+
+* ---------- Split remaining string by fix length -------------------------------------------------
+      lt_descr2 = split_string( iv_size   = 200
+                                iv_input  = <ls_desc1> ).
+
+      LOOP AT lt_descr2 ASSIGNING <ls_desc2>.
+        IF lv_first_time = abap_false.
+          cv_info = cv_info && | { <ls_desc2> }\n|.
+          lv_first_time = abap_true.
+        ELSE.
+          cv_info = cv_info && |* { <ls_desc2> }\n|.
+        ENDIF.
       ENDLOOP.
     ENDLOOP.
+  ENDMETHOD.
+
+  METHOD split_string.
+*----------------------------------------------------------------------*
+* LOCAL DATA DEFINITION
+*----------------------------------------------------------------------*
+    DATA: lv_size      TYPE i,
+          lv_size_end  TYPE i,
+          lv_pos       TYPE i,
+          lv_substring TYPE string.
+
+    lv_size = strlen( iv_input ) DIV iv_size.
+    lv_size_end = strlen( iv_input ) MOD iv_size.
+
+* ---------- Main split ---------------------------------------------------------------------------
+    DO lv_size TIMES.
+      CLEAR lv_substring.
+      lv_substring = substring( val = iv_input off = lv_pos len = iv_size ).
+      lv_pos = lv_pos + iv_size.
+      INSERT lv_substring INTO TABLE rt_output.
+    ENDDO.
+
+* ---------- If still some last characters to add, calculate last substring -----------------------
+    IF lv_size_end IS NOT INITIAL.
+      CLEAR lv_substring.
+      lv_substring = substring( val = iv_input off = lv_pos len = lv_size_end ).
+      INSERT lv_substring INTO TABLE rt_output.
+    ENDIF.
   ENDMETHOD.
 ENDCLASS.

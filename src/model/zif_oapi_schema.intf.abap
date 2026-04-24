@@ -9,8 +9,11 @@ INTERFACE zif_oapi_schema PUBLIC.
 
   DATA:
     type         TYPE string,
+    format       TYPE string,
     default      TYPE string,
+    max_length   TYPE i,
     properties   TYPE STANDARD TABLE OF ty_property WITH DEFAULT KEY,
+    enum         TYPE STANDARD TABLE OF string WITH DEFAULT KEY,
     items_type   TYPE string, " todo, deprecate this field? use items_schema instead?
     items_schema TYPE REF TO zif_oapi_schema,
     items_ref    TYPE string.
@@ -25,16 +28,18 @@ INTERFACE zif_oapi_schema PUBLIC.
 
   METHODS build_type_definition
     IMPORTING
-      iv_name        TYPE string
-      it_refs        TYPE zif_oapi_specification_v3=>ty_schemas
-      io_names       TYPE REF TO zcl_oapi_abap_name OPTIONAL
+      iv_name          TYPE string
+      it_refs          TYPE zif_oapi_specification_v3=>ty_schemas
+      io_names         TYPE REF TO zcl_oapi_abap_name OPTIONAL
+      iv_use_empty_key TYPE abap_bool OPTIONAL
     RETURNING
-      VALUE(rv_abap) TYPE string.
+      VALUE(rv_abap)   TYPE string.
 
   METHODS build_type_definition2
     IMPORTING
       iv_name          TYPE string
       is_specification TYPE zif_oapi_specification_v3=>ty_specification
+      iv_use_empty_key TYPE abap_bool OPTIONAL
     RETURNING
       VALUE(rv_abap)   TYPE string.
 

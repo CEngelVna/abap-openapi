@@ -1,8 +1,46 @@
 import * as https from "https";
 import * as fs from "fs";
-import * as path from "path";
 
 await import("../output/init.mjs");
+
+function generateClassXml(className, description) {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<abapGit version="v1.0.0" serializer="LCL_OBJECT_CLAS" serializer_version="v1.0.0">
+ <asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
+  <asx:values>
+   <VSEOCLASS>
+    <CLSNAME>${className}</CLSNAME>
+    <LANGU>E</LANGU>
+    <DESCRIPT>${description}</DESCRIPT>
+    <STATE>1</STATE>
+    <CLSCCINCL>X</CLSCCINCL>
+    <FIXPT>X</FIXPT>
+    <UNICODE>X</UNICODE>
+   </VSEOCLASS>
+  </asx:values>
+ </asx:abap>
+</abapGit>
+`;
+}
+
+function generateInterfaceXml(interfaceName, description) {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<abapGit version="v1.0.0" serializer="LCL_OBJECT_INTF" serializer_version="v1.0.0">
+ <asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
+  <asx:values>
+   <VSEOINTERF>
+    <CLSNAME>${interfaceName}</CLSNAME>
+    <LANGU>E</LANGU>
+    <DESCRIPT>${description}</DESCRIPT>
+    <EXPOSURE>2</EXPOSURE>
+    <STATE>1</STATE>
+    <UNICODE>X</UNICODE>
+   </VSEOINTERF>
+  </asx:values>
+ </asx:abap>
+</abapGit>
+`;
+}
 
 async function get(url) {
   return new Promise((resolve, reject) => {
@@ -35,7 +73,11 @@ async function run() {
     throw "supply a target folder name";
   }
   const folder = process.argv[3] + "/";
-  const number = folder.match(/test(\d+)/)[1];
+  let number = "";
+  const constFolderMatch = folder.match(/test(\d+)/);
+  if (constFolderMatch !== null) {
+    number = constFolderMatch[1];
+  }
 
   let name = "_";
   if (process.argv[4] !== undefined && process.argv[4] !== "") {
@@ -64,6 +106,8 @@ async function run() {
     clas_client: new abap.types.Character(30).set(clas_client),
     intf: new abap.types.Character(30).set(intf),
     openapi_json: new abap.types.String().set(spec),
+    no_compression: new abap.types.Character(1),
+    skip_deprecated: new abap.types.Character(1).set("X"),
   });
   const result = await abap.Classes["ZCL_OAPI_GENERATOR"].generate_v2({
     is_input: input,
@@ -71,17 +115,74 @@ async function run() {
 
   fs.writeFileSync(
     folder + clas_icf_serv + ".clas.abap",
-    result.get().clas_icf_serv.get()
+    result.get().clas_icf_serv.get() + "\n"
   );
   fs.writeFileSync(
     folder + clas_icf_impl + ".clas.abap",
-    result.get().clas_icf_impl.get()
+    result.get().clas_icf_impl.get() + "\n"
   );
   fs.writeFileSync(
     folder + clas_client + ".clas.abap",
-    result.get().clas_client.get()
+    result.get().clas_client.get() + "\n"
   );
-  fs.writeFileSync(folder + intf + ".intf.abap", result.get().intf.get());
+  fs.writeFileSync(
+    folder + intf + ".intf.abap",
+    result.get().intf.get() + "\n"
+  );
+
+  // Generate abapGit XML metadata files
+  const specJson = JSON.parse(spec);
+  const title = specJson.info?.title || "";
+  const baseDescription = title || specJson.info?.description || "";
+
+  // Helper function to create prefixed description within 60 char limit
+  function createPrefixedDescription(prefix, baseDesc) {
+    const prefixedDesc = `${prefix} ${baseDesc}`;
+    return prefixedDesc.length > 60
+      ? prefixedDesc.substring(0, 60)
+      : prefixedDesc;
+  }
+
+  const serverDescription = createPrefixedDescription(
+    "Server",
+    baseDescription
+  );
+  const implDescription = createPrefixedDescription(
+    "Implementation",
+    baseDescription
+  );
+  const clientDescription = createPrefixedDescription(
+    "Client",
+    baseDescription
+  );
+  const interfaceDescription = createPrefixedDescription(
+    "Interface",
+    baseDescription
+  );
+
+  const classXmlIcfServ = generateClassXml(
+    clas_icf_serv.toUpperCase(),
+    serverDescription
+  );
+  fs.writeFileSync(folder + clas_icf_serv + ".clas.xml", classXmlIcfServ);
+
+  const classXmlIcfImpl = generateClassXml(
+    clas_icf_impl.toUpperCase(),
+    implDescription
+  );
+  fs.writeFileSync(folder + clas_icf_impl + ".clas.xml", classXmlIcfImpl);
+
+  const classXmlClient = generateClassXml(
+    clas_client.toUpperCase(),
+    clientDescription
+  );
+  fs.writeFileSync(folder + clas_client + ".clas.xml", classXmlClient);
+
+  const intfXml = generateInterfaceXml(
+    intf.toUpperCase(),
+    interfaceDescription
+  );
+  fs.writeFileSync(folder + intf + ".intf.xml", intfXml);
 
   const consoleOutput = abap.console.get();
   if (consoleOutput !== "") {

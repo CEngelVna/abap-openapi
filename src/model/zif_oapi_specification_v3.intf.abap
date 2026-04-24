@@ -23,13 +23,14 @@ INTERFACE zif_oapi_specification_v3 PUBLIC.
 
   TYPES ty_media_types TYPE STANDARD TABLE OF ty_media_type WITH DEFAULT KEY.
 
-  TYPES: BEGIN OF ty_response,
+  TYPES: BEGIN OF ty_operation_response,
            code        TYPE string,
            description TYPE string,
            content     TYPE ty_media_types,
-         END OF ty_response.
+           ref         TYPE string,
+         END OF ty_operation_response.
 
-  TYPES ty_responses TYPE STANDARD TABLE OF ty_response WITH DEFAULT KEY.
+  TYPES ty_operation_responses TYPE STANDARD TABLE OF ty_operation_response WITH DEFAULT KEY.
 
   TYPES: BEGIN OF ty_operation,
            path           TYPE string,
@@ -39,12 +40,12 @@ INTERFACE zif_oapi_specification_v3 PUBLIC.
            operation_id   TYPE string,
            deprecated     TYPE abap_bool,
            abap_name      TYPE string,
-           body_schema     TYPE REF TO zif_oapi_schema,
-           body_schema_ref TYPE string,
-           parameters      TYPE ty_parameters,
-           parameters_ref  TYPE string_table,
-           responses       TYPE ty_responses,
-           responses_ref   TYPE string_table, " ? todo
+           request_body   TYPE ty_media_type, " only one supported
+          "  body_schema     TYPE REF TO zif_oapi_schema,
+          "  body_schema_ref TYPE string,
+           parameters     TYPE ty_parameters,
+           parameters_ref TYPE string_table,
+           responses      TYPE ty_operation_responses,
          END OF ty_operation.
 
   TYPES ty_operations TYPE STANDARD TABLE OF ty_operation WITH DEFAULT KEY.
@@ -59,9 +60,17 @@ INTERFACE zif_oapi_specification_v3 PUBLIC.
 
   TYPES ty_schemas TYPE STANDARD TABLE OF ty_component_schema WITH DEFAULT KEY.
 
+  TYPES: BEGIN OF ty_response,
+           name        TYPE string,
+           description TYPE string,
+           content     TYPE ty_media_types,
+         END OF ty_response.
+
+  TYPES ty_responses TYPE STANDARD TABLE OF ty_response WITH DEFAULT KEY.
+
   TYPES: BEGIN OF ty_components,
            schemas          TYPE ty_schemas,
-           responses        TYPE string, " todo
+           responses        TYPE ty_responses,
            parameters       TYPE ty_parameters,
            examples         TYPE string, " todo
            request_bodies   TYPE string, " todo
@@ -72,8 +81,8 @@ INTERFACE zif_oapi_specification_v3 PUBLIC.
          END OF ty_components.
 
   TYPES: BEGIN OF ty_info,
-           title TYPE string,
-           version TYPE string,
+           title       TYPE string,
+           version     TYPE string,
            description TYPE string,
          END OF ty_info.
 

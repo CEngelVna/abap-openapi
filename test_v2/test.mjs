@@ -1,4 +1,4 @@
-import { exec } from "child_process";
+import { execSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -17,7 +17,7 @@ async function run() {
 
     console.log("* " + folderName);
 
-    exec(
+    const output = execSync(
       "node " +
         root +
         "index.mjs " +
@@ -27,7 +27,20 @@ async function run() {
         path.sep +
         folderName
     );
+
+    const text = output.toString();
+    if (text !== "") {
+      console.log(text);
+    }
   }
+
+  // workarounds, to be fixed later
+  /*
+  const test020 = root + "test020/zcl_icf_serv020.clas.abap";
+  let abap = fs.readFileSync(test020).toString();
+  abap = abap.replace("DATA send TYPE zif_interface020=>bodysend.", `DATA send TYPE string. " todo, workaround`);
+  fs.writeFileSync(test020, abap);
+  */
 }
 
 console.log("V2 testing");

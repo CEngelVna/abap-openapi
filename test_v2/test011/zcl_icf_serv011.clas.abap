@@ -10,27 +10,36 @@ ENDCLASS.
 
 CLASS zcl_icf_serv011 IMPLEMENTATION.
   METHOD if_http_extension~handle_request.
-    DATA li_handler TYPE REF TO zif_interface011.
-    DATA lv_method  TYPE string.
-    DATA lv_path    TYPE string.
-
+    DATA li_handler      TYPE REF TO zif_interface011.
+    DATA lv_method       TYPE string.
+    DATA lv_path         TYPE string.
     CREATE OBJECT li_handler TYPE zcl_icf_impl011.
     lv_path = server->request->get_header_field( '~path' ).
+    REPLACE FIRST OCCURRENCE OF zif_interface011=>base_path IN lv_path WITH ''.
     lv_method = server->request->get_method( ).
 
     TRY.
-        IF lv_path = '/foo/{param}' AND lv_method = 'POST'.
-          li_handler->_foo_param( server->request->get_form_field( 'todo' ) ).
+        IF lv_path CP '/foo/*' AND lv_method = 'POST'.
+          DATA lt_path_segments_1 TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+          SPLIT lv_path AT '/' INTO TABLE lt_path_segments_1.
+          DELETE lt_path_segments_1 WHERE table_line IS INITIAL.
+          DATA lv_path_segment_1_2 TYPE string.
+          READ TABLE lt_path_segments_1 INDEX 2 INTO lv_path_segment_1_2.
+          ASSERT sy-subrc = 0.
+          DATA r__foo_param TYPE zif_interface011=>r__foo_param.
+          r__foo_param = li_handler->_foo_param(
+            param = lv_path_segment_1_2 ).
+          server->response->set_status( code = 200 reason = 'response' ).
           RETURN.
         ENDIF.
-      CATCH cx_static_check.
+      CATCH cx_static_check INTO DATA(lx_error1).
         server->response->set_content_type( 'text/plain' ).
-        server->response->set_cdata( 'exception' ).
+        server->response->set_cdata( lx_error1->get_text( ) ).
         server->response->set_status( code = 500 reason = 'Error' ).
     ENDTRY.
 
     server->response->set_content_type( 'text/plain' ).
-    server->response->set_cdata( 'no handler found' ).
+    server->response->set_cdata( |No handler found for { lv_path } { lv_method }| ).
     server->response->set_status( code = 500 reason = 'Error' ).
   ENDMETHOD.
 ENDCLASS.

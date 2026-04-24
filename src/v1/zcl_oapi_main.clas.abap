@@ -13,7 +13,7 @@ CLASS zcl_oapi_main DEFINITION PUBLIC.
       END OF ty_result.
 
     METHODS run
-      IMPORTING is_input TYPE ty_input
+      IMPORTING is_input         TYPE ty_input
       RETURNING VALUE(rs_result) TYPE ty_result.
 
   PRIVATE SECTION.
@@ -21,19 +21,19 @@ CLASS zcl_oapi_main DEFINITION PUBLIC.
     DATA ms_input TYPE ty_input.
 
     METHODS is_success_code
-      IMPORTING iv_code TYPE string
+      IMPORTING iv_code        TYPE string
       RETURNING VALUE(rv_bool) TYPE abap_bool.
 
     METHODS operation_implementation
-      IMPORTING is_operation TYPE zif_oapi_specification_v3=>ty_operation
+      IMPORTING is_operation   TYPE zif_oapi_specification_v3=>ty_operation
       RETURNING VALUE(rv_abap) TYPE string.
 
     METHODS find_return
-      IMPORTING is_operation TYPE zif_oapi_specification_v3=>ty_operation
+      IMPORTING is_operation   TYPE zif_oapi_specification_v3=>ty_operation
       RETURNING VALUE(rs_type) TYPE zif_oapi_specification_v3=>ty_component_schema.
 
     METHODS build_abap_parameters
-      IMPORTING is_operation TYPE zif_oapi_specification_v3=>ty_operation
+      IMPORTING is_operation   TYPE zif_oapi_specification_v3=>ty_operation
       RETURNING VALUE(rv_abap) TYPE string.
 
     METHODS build_class
@@ -52,29 +52,29 @@ CLASS zcl_oapi_main DEFINITION PUBLIC.
       RETURNING VALUE(rv_abap) TYPE string.
 
     METHODS dump_json
-      IMPORTING ii_schema TYPE REF TO zif_oapi_schema
+      IMPORTING ii_schema      TYPE REF TO zif_oapi_schema
       RETURNING VALUE(rv_abap) TYPE string.
 
     METHODS find_parser_method
-      IMPORTING iv_name TYPE string
+      IMPORTING iv_name          TYPE string
       RETURNING VALUE(rv_method) TYPE string.
 
     METHODS abap_schema_to_json
-      IMPORTING iv_name TYPE string
+      IMPORTING iv_name        TYPE string
       RETURNING VALUE(rv_abap) TYPE string.
 
     METHODS find_schema
-      IMPORTING iv_name TYPE string
+      IMPORTING iv_name          TYPE string
       RETURNING VALUE(rs_schema) TYPE zif_oapi_specification_v3=>ty_component_schema.
 
     METHODS dump_parser
-      IMPORTING ii_schema TYPE REF TO zif_oapi_schema
-                iv_abap_name TYPE string
+      IMPORTING ii_schema      TYPE REF TO zif_oapi_schema
+                iv_abap_name   TYPE string
                 iv_hard_prefix TYPE string OPTIONAL
       RETURNING VALUE(rv_abap) TYPE string.
 
     METHODS find_uri_prefix
-      IMPORTING is_servers LIKE ms_specification-servers
+      IMPORTING is_servers       LIKE ms_specification-servers
       RETURNING VALUE(rv_prefix) TYPE string.
 
 ENDCLASS.
@@ -369,12 +369,12 @@ CLASS zcl_oapi_main IMPLEMENTATION.
             |*     { ls_content-type }{ lv_extra }\n|.
         ENDLOOP.
       ENDLOOP.
-      IF ls_operation-body_schema_ref IS NOT INITIAL.
+      IF ls_operation-request_body-schema_ref IS NOT INITIAL.
         rv_abap = rv_abap &&
-          |* Body ref: { ls_operation-body_schema_ref }\n|.
-      ELSEIF ls_operation-body_schema IS NOT INITIAL.
+          |* Body ref: { ls_operation-request_body-schema_ref }\n|.
+      ELSEIF ls_operation-request_body-schema IS NOT INITIAL.
         rv_abap = rv_abap &&
-          |* Body schema: { ls_operation-body_schema->type }\n|.
+          |* Body schema: { ls_operation-request_body-schema->type }\n|.
       ENDIF.
       rv_abap = rv_abap &&
         |  METHODS { ls_operation-abap_name }{ build_abap_parameters( ls_operation ) }|.
@@ -450,9 +450,9 @@ CLASS zcl_oapi_main IMPLEMENTATION.
       rv_abap = rv_abap && |    mi_client->request->set_header_field( name = '{ ls_parameter-name }' value = { ls_parameter-abap_name } ).\n|.
     ENDLOOP.
 
-    IF is_operation-body_schema_ref IS NOT INITIAL.
-      rv_abap = rv_abap && abap_schema_to_json( is_operation-body_schema_ref ).
-    ELSEIF is_operation-body_schema IS NOT INITIAL AND is_operation-body_schema->type = 'string'.
+    IF is_operation-request_body-schema_ref IS NOT INITIAL.
+      rv_abap = rv_abap && abap_schema_to_json( is_operation-request_body-schema_ref ).
+    ELSEIF is_operation-request_body-schema IS NOT INITIAL AND is_operation-request_body-schema->type = 'string'.
       rv_abap = rv_abap && |    mi_client->request->set_cdata( body ).\n|.
     ENDIF.
 
@@ -577,8 +577,8 @@ CLASS zcl_oapi_main IMPLEMENTATION.
                                  sep = |\n| ).
     ENDIF.
 
-    IF is_operation-body_schema_ref IS NOT INITIAL.
-      ls_schema = find_schema( is_operation-body_schema_ref ).
+    IF is_operation-request_body-schema_ref IS NOT INITIAL.
+      ls_schema = find_schema( is_operation-request_body-schema_ref ).
       IF ls_schema IS NOT INITIAL.
         IF lv_text IS NOT INITIAL.
           lv_text = lv_text && |\n|.
@@ -586,7 +586,7 @@ CLASS zcl_oapi_main IMPLEMENTATION.
         lv_text = lv_text &&
           |      body TYPE { ls_schema-abap_name }|.
       ENDIF.
-    ELSEIF is_operation-body_schema IS NOT INITIAL AND is_operation-body_schema->type = 'string'.
+    ELSEIF is_operation-request_body-schema IS NOT INITIAL AND is_operation-request_body-schema->type = 'string'.
       IF lv_text IS NOT INITIAL.
         lv_text = lv_text && |\n|.
       ENDIF.

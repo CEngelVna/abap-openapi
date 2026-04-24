@@ -10,33 +10,34 @@ ENDCLASS.
 
 CLASS zcl_icf_serv010 IMPLEMENTATION.
   METHOD if_http_extension~handle_request.
-    DATA li_handler TYPE REF TO zif_interface010.
-    DATA lv_method  TYPE string.
-    DATA lv_path    TYPE string.
-
+    DATA li_handler      TYPE REF TO zif_interface010.
+    DATA lv_method       TYPE string.
+    DATA lv_path         TYPE string.
     CREATE OBJECT li_handler TYPE zcl_icf_impl010.
     lv_path = server->request->get_header_field( '~path' ).
+    REPLACE FIRST OCCURRENCE OF zif_interface010=>base_path IN lv_path WITH ''.
     lv_method = server->request->get_method( ).
 
     TRY.
         IF lv_path = '/user' AND lv_method = 'POST'.
-          DATA r_createuser TYPE zif_interface010=>r_createuser.
-          r_createuser = li_handler->createuser( ).
-          IF r_createuser-_default_app_json IS NOT INITIAL.
-            server->response->set_content_type( 'application/json' ).
-            server->response->set_cdata( /ui2/cl_json=>serialize( r_createuser-_default_app_json ) ).
-            server->response->set_status( code = 200 reason = 'successful operation' ).
-            RETURN.
-          ENDIF.
+          DATA r_create_user TYPE zif_interface010=>r_create_user.
+          r_create_user = li_handler->create_user(
+            body = 'todo' ).
+          server->response->set_content_type( 'application/json' ).
+          server->response->set_cdata( /ui2/cl_json=>serialize(
+            data        = r_create_user-_default_app_json
+            pretty_name = /ui2/cl_json=>pretty_mode-camel_case ) ).
+          server->response->set_status( code = 200 reason = 'successful operation' ).
+          RETURN.
         ENDIF.
-      CATCH cx_static_check.
+      CATCH cx_static_check INTO DATA(lx_error1).
         server->response->set_content_type( 'text/plain' ).
-        server->response->set_cdata( 'exception' ).
+        server->response->set_cdata( lx_error1->get_text( ) ).
         server->response->set_status( code = 500 reason = 'Error' ).
     ENDTRY.
 
     server->response->set_content_type( 'text/plain' ).
-    server->response->set_cdata( 'no handler found' ).
+    server->response->set_cdata( |No handler found for { lv_path } { lv_method }| ).
     server->response->set_status( code = 500 reason = 'Error' ).
   ENDMETHOD.
 ENDCLASS.

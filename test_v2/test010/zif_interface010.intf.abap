@@ -4,12 +4,18 @@ INTERFACE zif_interface010 PUBLIC.
 * Description: default_response
 * Version: 1.0.11
 
-  TYPES: BEGIN OF r_createuser,
+  CONSTANTS base_path TYPE string VALUE ''.
+
+  TYPES: BEGIN OF r_create_user,
+           code          TYPE i,
+           reason        TYPE string,
            _default_app_json TYPE string,
-         END OF r_createuser.
-  METHODS createuser
+         END OF r_create_user.
+  METHODS create_user
+    IMPORTING
+      body TYPE string
     RETURNING
-      VALUE(return) TYPE r_createuser
+      VALUE(return) TYPE r_create_user
     RAISING
       cx_static_check.
 ENDINTERFACE.

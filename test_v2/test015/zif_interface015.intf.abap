@@ -3,6 +3,8 @@ INTERFACE zif_interface015 PUBLIC.
 * Title: return structured array
 * Version: 1
 
+  CONSTANTS base_path TYPE string VALUE ''.
+
 * arrsubsomething
   TYPES: BEGIN OF arrsubsomething,
            key TYPE string,
@@ -14,6 +16,8 @@ INTERFACE zif_interface015 PUBLIC.
          END OF something.
 
   TYPES: BEGIN OF r__array,
+           code          TYPE i,
+           reason        TYPE string,
            _200_app_json TYPE something,
          END OF r__array.
   METHODS _array

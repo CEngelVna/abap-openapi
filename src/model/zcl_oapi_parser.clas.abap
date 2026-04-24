@@ -1,8 +1,10 @@
 CLASS zcl_oapi_parser DEFINITION PUBLIC.
   PUBLIC SECTION.
     METHODS parse
-      IMPORTING iv_json TYPE string
-      RETURNING VALUE(rs_schema) TYPE zif_oapi_specification_v3=>ty_specification.
+      IMPORTING
+        iv_json          TYPE string
+      RETURNING
+        VALUE(rs_schema) TYPE zif_oapi_specification_v3=>ty_specification.
 
   PRIVATE SECTION.
     DATA mo_json TYPE REF TO zcl_oapi_json.
@@ -14,31 +16,35 @@ CLASS zcl_oapi_parser DEFINITION PUBLIC.
       RETURNING VALUE(rt_servers) TYPE zif_oapi_specification_v3=>ty_servers.
 
     METHODS parse_parameters
-      IMPORTING iv_prefix TYPE string
+      IMPORTING iv_prefix            TYPE string
       RETURNING VALUE(rt_parameters) TYPE zif_oapi_specification_v3=>ty_parameters.
 
     METHODS parse_parameters_ref
-      IMPORTING iv_prefix TYPE string
+      IMPORTING iv_prefix            TYPE string
       RETURNING VALUE(rt_parameters) TYPE string_table.
 
-    METHODS parse_responses
-      IMPORTING iv_prefix TYPE string
-      RETURNING VALUE(rt_responses) TYPE zif_oapi_specification_v3=>ty_responses.
+    METHODS parse_operation_responses
+      IMPORTING iv_prefix           TYPE string
+      RETURNING VALUE(rt_responses) TYPE zif_oapi_specification_v3=>ty_operation_responses.
 
     METHODS parse_media_types
-      IMPORTING iv_prefix TYPE string
+      IMPORTING iv_prefix             TYPE string
       RETURNING VALUE(rt_media_types) TYPE zif_oapi_specification_v3=>ty_media_types.
 
     METHODS parse_components
       RETURNING VALUE(rs_components) TYPE zif_oapi_specification_v3=>ty_components.
 
     METHODS parse_schema
-      IMPORTING iv_prefix TYPE string
+      IMPORTING iv_prefix        TYPE string
       RETURNING VALUE(ri_schema) TYPE REF TO zif_oapi_schema.
 
     METHODS parse_schemas
-      IMPORTING iv_prefix TYPE string
+      IMPORTING iv_prefix         TYPE string
       RETURNING VALUE(rt_schemas) TYPE zif_oapi_specification_v3=>ty_schemas.
+
+    METHODS parse_component_responses
+      IMPORTING iv_prefix           TYPE string
+      RETURNING VALUE(rt_responses) TYPE zif_oapi_specification_v3=>ty_responses.
 
 ENDCLASS.
 
@@ -62,42 +68,84 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD parse_schema.
-    DATA lt_names TYPE string_table.
-    DATA lv_name TYPE string.
+    DATA lt_strings  TYPE string_table.
+    DATA lv_string   TYPE string.
     DATA ls_property TYPE zif_oapi_schema=>ty_property.
-    DATA lo_names TYPE REF TO zcl_oapi_abap_name.
+    DATA lo_names    TYPE REF TO zcl_oapi_abap_name.
     CREATE OBJECT lo_names.
 
     CREATE OBJECT ri_schema TYPE zcl_oapi_schema.
     ri_schema->type = mo_json->value_string( iv_prefix && '/type' ).
     IF ri_schema->type IS INITIAL.
-      ri_schema->type = 'string'. " todo, handle "oneOf" and "anyOf"
+      ri_schema->type = 'string'. " todo, handle "allOf", "oneOf" and "anyOf"
       RETURN.
     ENDIF.
+    ri_schema->format = mo_json->value_string( iv_prefix && '/format' ).
     ri_schema->default = mo_json->value_string( iv_prefix && '/default' ).
+    ri_schema->max_length = mo_json->value_string( iv_prefix && '/maxLength' ).
     ri_schema->items_ref = mo_json->value_string( iv_prefix && '/items/$ref' ).
+    IF ri_schema->type = 'array'
+        AND mo_json->exists( iv_prefix && '/items/allOf' ) = abap_true
+        AND lines( mo_json->members( iv_prefix && '/items/allOf' ) ) = 1.
+* squash single allOf in array type
+      ri_schema->items_ref = mo_json->value_string( iv_prefix && '/items/allOf/1/$ref' ).
+    ENDIF.
     ri_schema->items_type = mo_json->value_string( iv_prefix && '/items/type' ).
     IF ri_schema->items_ref IS INITIAL.
       ri_schema->items_schema = parse_schema( iv_prefix && '/items' ).
     ENDIF.
 
-    lt_names = mo_json->members( iv_prefix && '/properties/' ).
-    LOOP AT lt_names INTO lv_name.
+    lt_strings = mo_json->members( iv_prefix && '/enum/' ).
+    LOOP AT lt_strings INTO lv_string.
+      lv_string = mo_json->value_string( iv_prefix && '/enum/' && lv_string ).
+      IF lv_string IS NOT INITIAL.
+        INSERT lv_string INTO TABLE ri_schema->enum.
+      ENDIF.
+    ENDLOOP.
+
+    lt_strings = mo_json->members( iv_prefix && '/properties/' ).
+    LOOP AT lt_strings INTO lv_string.
       CLEAR ls_property.
-      ls_property-name = lv_name.
-      ls_property-abap_name = lo_names->to_abap_name( lv_name ).
-      ls_property-ref = mo_json->value_string( iv_prefix && '/properties/' && lv_name && '/$ref' ).
+      ls_property-name = lv_string.
+      ls_property-abap_name = lo_names->to_abap_name( lv_string ).
+      ls_property-ref = mo_json->value_string( iv_prefix && '/properties/' && lv_string && '/$ref' ).
+
+      IF ls_property-ref IS INITIAL
+          AND mo_json->exists( iv_prefix && '/properties/' && lv_string && '/allOf' ) = abap_true
+          AND lines( mo_json->members( iv_prefix && '/properties/' && lv_string && '/allOf' ) ) = 1.
+* squash single allOf in object type
+        ls_property-ref = mo_json->value_string( iv_prefix && '/properties/' && lv_string && '/allOf/1/$ref' ).
+      ENDIF.
+
       IF ls_property-ref IS INITIAL.
-        ls_property-schema = parse_schema( iv_prefix && '/properties/' && lv_name ).
+        ls_property-schema = parse_schema( iv_prefix && '/properties/' && lv_string ).
       ENDIF.
 
       APPEND ls_property TO ri_schema->properties.
     ENDLOOP.
   ENDMETHOD.
 
+  METHOD parse_component_responses.
+
+    DATA lt_names    TYPE string_table.
+    DATA lv_name     TYPE string.
+    DATA ls_response LIKE LINE OF rt_responses.
+
+    lt_names = mo_json->members( iv_prefix ).
+    LOOP AT lt_names INTO lv_name.
+      CLEAR ls_response.
+      ls_response-name = lv_name.
+      ls_response-description = mo_json->value_string( iv_prefix && lv_name && '/description' ).
+      ls_response-content = parse_media_types( iv_prefix && lv_name && '/content/' ).
+      APPEND ls_response TO rt_responses.
+    ENDLOOP.
+
+  ENDMETHOD.
+
   METHOD parse_components.
     rs_components-parameters = parse_parameters( '/components/parameters/' ).
     rs_components-schemas = parse_schemas( '/components/schemas/' ).
+    rs_components-responses = parse_component_responses( '/components/responses/' ).
   ENDMETHOD.
 
   METHOD parse_schemas.
@@ -138,6 +186,8 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
 
   METHOD parse_operations.
     DATA lt_paths TYPE string_table.
+    DATA lt_contents TYPE string_table.
+    DATA lv_content LIKE LINE OF lt_contents.
     DATA lv_path LIKE LINE OF lt_paths.
     DATA lt_methods TYPE string_table.
     DATA lv_method LIKE LINE OF lt_methods.
@@ -164,7 +214,7 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
         ls_operation-operation_id = mo_json->value_string( lv_prefix && '/operationId' ).
         ls_operation-parameters = parse_parameters( lv_prefix && '/parameters/' ).
         ls_operation-parameters_ref = parse_parameters_ref( lv_prefix && '/parameters/' ).
-        ls_operation-responses = parse_responses( lv_prefix && '/responses/' ).
+        ls_operation-responses = parse_operation_responses( lv_prefix && '/responses/' ).
 
         ls_operation-abap_name = lo_names->to_abap_name( ls_operation-operation_id ).
         IF ls_operation-abap_name IS INITIAL.
@@ -177,10 +227,20 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
           CONTINUE.
         ENDIF.
 
-        ls_operation-body_schema_ref = mo_json->value_string( lv_prefix && '/requestBody/content/application/json/schema/$ref' ).
-        IF ls_operation-body_schema_ref IS INITIAL AND lines( mo_json->members( lv_prefix && '/requestBody/content/application/json/schema/' ) ) > 0.
-          ls_operation-body_schema = parse_schema( lv_prefix && '/requestBody/content/application/json/schema' ).
+        CLEAR ls_operation-request_body.
+        lt_contents = mo_json->members( lv_prefix && '/requestBody/content/' ).
+        IF lines( lt_contents ) > 0.
+          " only one content body currently supported
+          READ TABLE lt_contents INTO lv_content INDEX 1.
+          ASSERT sy-subrc = 0.
+
+          ls_operation-request_body-type = lv_content.
+          ls_operation-request_body-schema_ref = mo_json->value_string( lv_prefix && '/requestBody/content/' && lv_content && '/schema/$ref' ).
+          IF ls_operation-request_body-schema_ref IS INITIAL AND lines( mo_json->members( lv_prefix && '/requestBody/content/' && lv_content && '/schema/' ) ) > 0.
+            ls_operation-request_body-schema = parse_schema( lv_prefix && '/requestBody/content/' && lv_content && '/schema' ).
+          ENDIF.
         ENDIF.
+
         APPEND ls_operation TO rt_operations.
       ENDLOOP.
 
@@ -188,10 +248,11 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD parse_parameters.
-    DATA lt_members TYPE string_table.
-    DATA lv_member LIKE LINE OF lt_members.
+    DATA lt_members   TYPE string_table.
+    DATA lv_member    LIKE LINE OF lt_members.
     DATA ls_parameter LIKE LINE OF rt_parameters.
-    DATA lo_names TYPE REF TO zcl_oapi_abap_name.
+    DATA lo_names     TYPE REF TO zcl_oapi_abap_name.
+    DATA lv_name      TYPE string.
 
     lt_members = mo_json->members( iv_prefix ).
     LOOP AT lt_members INTO lv_member.
@@ -207,6 +268,10 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
         ls_parameter-schema_ref = mo_json->value_string( iv_prefix && lv_member && '/schema/$ref' ).
         IF ls_parameter-schema_ref IS INITIAL.
           ls_parameter-schema = parse_schema( iv_prefix && lv_member && '/schema' ).
+        ELSE.
+          " Fill the schema based on the reference
+          lv_name = ls_parameter-schema_ref(1).
+          ls_parameter-schema = parse_schema( lv_name ).
         ENDIF.
         APPEND ls_parameter TO rt_parameters.
       ENDIF.
@@ -227,9 +292,9 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
     ENDLOOP.
   ENDMETHOD.
 
-  METHOD parse_responses.
-    DATA lt_members TYPE string_table.
-    DATA lv_member LIKE LINE OF lt_members.
+  METHOD parse_operation_responses.
+    DATA lt_members  TYPE string_table.
+    DATA lv_member   LIKE LINE OF lt_members.
     DATA ls_response LIKE LINE OF rt_responses.
 
     lt_members = mo_json->members( iv_prefix ).
@@ -238,6 +303,7 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
       ls_response-code = lv_member.
       ls_response-description = mo_json->value_string( iv_prefix && lv_member && '/description' ).
       ls_response-content = parse_media_types( iv_prefix && lv_member && '/content/' ).
+      ls_response-ref = mo_json->value_string( iv_prefix && lv_member && '/$ref' ).
       APPEND ls_response TO rt_responses.
     ENDLOOP.
   ENDMETHOD.
@@ -252,6 +318,12 @@ CLASS zcl_oapi_parser IMPLEMENTATION.
       CLEAR ls_media_type.
       ls_media_type-type = lv_member.
       ls_media_type-schema_ref = mo_json->value_string( iv_prefix && lv_member && '/schema/$ref' ).
+      IF ls_media_type-schema_ref IS INITIAL
+          AND mo_json->exists( iv_prefix && lv_member && '/schema/allOf' ) = abap_true
+          AND lines( mo_json->members( iv_prefix && lv_member && '/schema/allOf' ) ) = 1.
+* squash single allOf in response schema
+        ls_media_type-schema_ref = mo_json->value_string( iv_prefix && lv_member && '/schema/allOf/1/$ref' ).
+      ENDIF.
       IF ls_media_type-schema_ref IS INITIAL.
         ls_media_type-schema = parse_schema( iv_prefix && lv_member && '/schema' ).
       ENDIF.

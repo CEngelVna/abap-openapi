@@ -4,6 +4,8 @@ INTERFACE zif_interface002 PUBLIC.
 * Description: c1_number_add
 * Version: 1
 
+  CONSTANTS base_path TYPE string VALUE ''.
+
 * POSTtestResponse
   TYPES: BEGIN OF posttestresponse,
            result TYPE f,
@@ -15,6 +17,8 @@ INTERFACE zif_interface002 PUBLIC.
          END OF posttestrequest.
 
   TYPES: BEGIN OF r__test,
+           code          TYPE i,
+           reason        TYPE string,
            _200_app_json TYPE posttestresponse,
          END OF r__test.
   METHODS _test

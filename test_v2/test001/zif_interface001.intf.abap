@@ -4,7 +4,15 @@ INTERFACE zif_interface001 PUBLIC.
 * Description: ping
 * Version: 1
 
+  CONSTANTS base_path TYPE string VALUE ''.
+
+  TYPES: BEGIN OF r__ping,
+           code          TYPE i,
+           reason        TYPE string,
+         END OF r__ping.
   METHODS _ping
+    RETURNING
+      VALUE(return) TYPE r__ping
     RAISING
       cx_static_check.
 ENDINTERFACE.
